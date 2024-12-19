@@ -13,6 +13,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.utils import shuffle
 from sklearn.model_selection import train_test_split
 from bs4 import BeautifulSoup
+from evaluate import load
+from tqdm.notebook import tqdm
 
 
 def extract_data(data_dir: str):
@@ -24,12 +26,11 @@ def load_data(data_dir: str):
     data = {}
     for filename in os.listdir(data_dir):
         if filename.endswith(".xml"):
-            with open(os.path.join(data_dir, filename), "r") as file:
+            with open(os.path.join(data_dir, filename), "r", encoding="utf-8") as file:
                 soup = BeautifulSoup(file, "lxml")
                 attributes = [row.attrs for row in soup.find_all("row")]
                 data[filename[:-4]] = pd.DataFrame(attributes)
     return data
-
 
 
 def clean_html(html_content):
@@ -41,14 +42,15 @@ def clean_html(html_content):
 
 
 def preprocess_data(
-    data: dict, 
+    data: dict,
     n_negative_samples_per_link: int = 1,
     add_tags: bool = False,
     add_post_text: bool = False,
     include_pooled_comments: bool = False,
+    add_bertscore: bool = False
 ):
     post_links = data["PostLinks"]
-    posts = data["Posts"]
+    posts = data["Posts"][data["Posts"]["posttypeid"] == "1"]
     users = data["Users"]
     votes = data["Votes"]
     tags = data["Tags"]
@@ -73,9 +75,14 @@ def preprocess_data(
     votes_agg = votes_agg.rename(columns={'votetypeid': 'vote_count'})
 
     # 4. Aggregate Comments
-    comments_agg = comments.groupby('postid').agg({'score': 'mean', 'id': 'count'}).reset_index()
-    comments_agg = comments_agg.rename(columns={'score': 'avg_comment_score', 'id': 'comment_count'})
-    
+    comments_agg = (
+        comments.astype({"score": "int32", "id": "int32"})
+        .groupby('postid')
+        .agg({'score': 'mean', 'id': 'count'})
+        .reset_index()
+        .rename(columns={'score': 'avg_comment_score', 'id': 'comment_count'})
+    )
+
     if include_pooled_comments:
         pooled_text = comments.groupby('postid')['text'].apply(lambda x: ' '.join(x)).reset_index()
         pooled_text = pooled_text.rename(columns={'text': 'comments_text'})
@@ -125,6 +132,41 @@ def preprocess_data(
     combined_df = combined_df.merge(comments_agg, left_on='relatedpostid', right_on='postid', how='left', suffixes=('', '_related'))
     if add_tags:
         combined_df = combined_df.merge(tags_onehot, on='postid', how='left')
+
+    combined_df.drop(columns=["postid", "relatedpostid", "id", "creationdate", "postid_related"], inplace=True)
+    combined_df = combined_df[combined_df["body"].isnull() == False]
+    combined_df = combined_df[combined_df["body_related"].isnull() == False]
+
+    if add_bertscore:
+        bertscore = load("bertscore")
+
+        batch_size = 50
+        num_batches = len(combined_df) // batch_size + (len(combined_df) % batch_size > 0)
+
+        bertscore_f1 = []
+
+        for i in tqdm(range(num_batches), desc="Calculating BERTScore"):
+            start = i * batch_size
+            end = start + batch_size
+            batch_predictions = combined_df["body"].iloc[start:end].tolist()
+            batch_references = combined_df["body_related"].iloc[start:end].tolist()
+            try:
+                results = bertscore.compute(
+                    predictions=batch_predictions,
+                    references=batch_references,
+                    lang="en",
+                    # model_type = "distilbert-base-uncased",
+                    device="cuda"
+                )
+            except Exception as e:
+                print(batch_predictions)
+                print("-------------------")
+                print(batch_references)
+                raise e
+            bertscore_f1.extend(results["f1"])
+
+        combined_df["bertscore_f1"] = bertscore_f1
+
 
     # Prepare final dataset
     X = combined_df
