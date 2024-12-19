@@ -1,0 +1,6 @@
+pandas
+py7zr
+beautifulsoup4
+lxml
+scikit-learn
+catboost
