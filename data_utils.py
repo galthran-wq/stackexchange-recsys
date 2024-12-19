@@ -1,5 +1,6 @@
 import os
 
+
 import pandas as pd
 import py7zr
 from bs4 import BeautifulSoup
@@ -11,6 +12,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import shuffle
 from sklearn.model_selection import train_test_split
+from bs4 import BeautifulSoup
 
 
 def extract_data(data_dir: str):
@@ -30,7 +32,21 @@ def load_data(data_dir: str):
 
 
 
-def preprocess_data(data: dict):
+def clean_html(html_content):
+    if not isinstance(html_content, str):
+        return None
+    soup = BeautifulSoup(html_content, "lxml")
+    text_content = soup.get_text()
+    return text_content
+
+
+def preprocess_data(
+    data: dict, 
+    n_negative_samples_per_link: int = 1,
+    add_tags: bool = False,
+    add_post_text: bool = False,
+    include_pooled_comments: bool = False,
+):
     post_links = data["PostLinks"]
     posts = data["Posts"]
     users = data["Users"]
@@ -40,7 +56,12 @@ def preprocess_data(data: dict):
 
     # Feature Engineering
     # 1. Extract features from Posts
-    posts_features = posts[['id', 'score', 'viewcount', 'answercount', 'commentcount']]
+    posts_features = ['id', 'score', 'viewcount', 'answercount', 'commentcount']
+    if add_post_text:
+        posts_features.append('body')
+    posts_features = posts[posts_features]
+    if add_post_text:
+        posts_features['body'] = posts_features['body'].map(clean_html)
     posts_features = posts_features.rename(columns={'id': 'postid'})
 
     # 2. Extract features from Users
@@ -54,10 +75,16 @@ def preprocess_data(data: dict):
     # 4. Aggregate Comments
     comments_agg = comments.groupby('postid').agg({'score': 'mean', 'id': 'count'}).reset_index()
     comments_agg = comments_agg.rename(columns={'score': 'avg_comment_score', 'id': 'comment_count'})
+    
+    if include_pooled_comments:
+        pooled_text = comments.groupby('postid')['text'].apply(lambda x: ' '.join(x)).reset_index()
+        pooled_text = pooled_text.rename(columns={'text': 'comments_text'})
+        comments_agg = comments_agg.merge(pooled_text, on='postid', how='left')
 
-    # 5. One-hot encode Tags
-    tags_onehot = tags['tagname'].str.get_dummies()
-    tags_onehot['postid'] = tags['id']
+    if add_tags:
+        # 5. One-hot encode Tags
+        tags_onehot = tags['tagname'].str.get_dummies()
+        tags_onehot['postid'] = tags['id']
 
     # Generate negative examples
     # Get all unique post IDs
@@ -67,7 +94,7 @@ def preprocess_data(data: dict):
     existing_links = set(zip(post_links['postid'], post_links['relatedpostid']))
 
     # Generate random pairs of post IDs
-    num_negative_samples = len(post_links)  # You can adjust this number
+    num_negative_samples = len(post_links) * n_negative_samples_per_link  # You can adjust this number
     negative_samples = set()
 
     while len(negative_samples) < num_negative_samples:
@@ -93,8 +120,11 @@ def preprocess_data(data: dict):
     combined_df = combined_df.merge(posts_features, left_on='postid', right_on='postid', how='left')
     combined_df = combined_df.merge(posts_features, left_on='relatedpostid', right_on='postid', suffixes=('', '_related'), how='left')
     combined_df = combined_df.merge(votes_agg, on='postid', how='left')
+    combined_df = combined_df.merge(votes_agg, left_on='relatedpostid', right_on='postid', how='left', suffixes=('', '_related'))
     combined_df = combined_df.merge(comments_agg, on='postid', how='left')
-    combined_df = combined_df.merge(tags_onehot, on='postid', how='left')
+    combined_df = combined_df.merge(comments_agg, left_on='relatedpostid', right_on='postid', how='left', suffixes=('', '_related'))
+    if add_tags:
+        combined_df = combined_df.merge(tags_onehot, on='postid', how='left')
 
     # Prepare final dataset
     X = combined_df
