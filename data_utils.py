@@ -1,19 +1,12 @@
 import os
 
-
+import numpy as np
 import pandas as pd
 import py7zr
 from bs4 import BeautifulSoup
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.model_selection import train_test_split
-import numpy as np
-import pandas as pd
-from sklearn.preprocessing import StandardScaler
-from sklearn.utils import shuffle
-from sklearn.model_selection import train_test_split
-from bs4 import BeautifulSoup
 from evaluate import load
+from sklearn.model_selection import train_test_split
+from sklearn.utils import shuffle
 from tqdm.notebook import tqdm
 
 
@@ -60,7 +53,7 @@ def preprocess_data(
     # 1. Extract features from Posts
     posts_features = ['id', 'score', 'viewcount', 'answercount', 'commentcount']
     if add_post_text:
-        posts_features.append('body')
+        posts_features.extend(["body", "title"])
     posts_features = posts[posts_features]
     if add_post_text:
         posts_features['body'] = posts_features['body'].map(clean_html)
@@ -143,30 +136,69 @@ def preprocess_data(
         batch_size = 50
         num_batches = len(combined_df) // batch_size + (len(combined_df) % batch_size > 0)
 
-        bertscore_f1 = []
+        bertscore_title_f1 = []
+        for i in tqdm(range(num_batches), desc="Calculating BERTScore (title)"):
+            start = i * batch_size
+            end = start + batch_size
+            batch_predictions = combined_df["title"].iloc[start:end].tolist()
+            batch_references = combined_df["title_related"].iloc[start:end].tolist()
 
-        for i in tqdm(range(num_batches), desc="Calculating BERTScore"):
+            results = bertscore.compute(
+                predictions=batch_predictions,
+                references=batch_references,
+                lang="en",
+                device="cuda"
+            )
+            bertscore_title_f1.extend(results["f1"])
+        combined_df["bertscore_title_f1"] = bertscore_title_f1
+
+        bertscore_body_f1 = []
+        for i in tqdm(range(num_batches), desc="Calculating BERTScore (body)"):
             start = i * batch_size
             end = start + batch_size
             batch_predictions = combined_df["body"].iloc[start:end].tolist()
             batch_references = combined_df["body_related"].iloc[start:end].tolist()
-            try:
-                results = bertscore.compute(
-                    predictions=batch_predictions,
-                    references=batch_references,
-                    lang="en",
-                    # model_type = "distilbert-base-uncased",
-                    device="cuda"
-                )
-            except Exception as e:
-                print(batch_predictions)
-                print("-------------------")
-                print(batch_references)
-                raise e
-            bertscore_f1.extend(results["f1"])
 
-        combined_df["bertscore_f1"] = bertscore_f1
+            results = bertscore.compute(
+                predictions=batch_predictions,
+                references=batch_references,
+                lang="en",
+                device="cuda"
+            )
+            bertscore_body_f1.extend(results["f1"])
+        combined_df["bertscore_body_f1"] = bertscore_body_f1
 
+        bertscore_title_recall = []
+        for i in tqdm(range(num_batches), desc="Calculating BERTScore (title recall)"):
+            start = i * batch_size
+            end = start + batch_size
+            batch_predictions = combined_df["body_related"].iloc[start:end].tolist()
+            batch_references = combined_df["title"].iloc[start:end].tolist()
+
+            results = bertscore.compute(
+                predictions=batch_predictions,
+                references=batch_references,
+                lang="en",
+                device="cuda"
+            )
+            bertscore_title_recall.extend(results["recall"])
+        combined_df["bertscore_title_recall"] = bertscore_title_recall
+
+        bertscore_title_related_recall = []
+        for i in tqdm(range(num_batches), desc="Calculating BERTScore (title_related recall)"):
+            start = i * batch_size
+            end = start + batch_size
+            batch_predictions = combined_df["body"].iloc[start:end].tolist()
+            batch_references = combined_df["title_related"].iloc[start:end].tolist()
+
+            results = bertscore.compute(
+                predictions=batch_predictions,
+                references=batch_references,
+                lang="en",
+                device="cuda"
+            )
+            bertscore_title_related_recall.extend(results["recall"])
+        combined_df["bertscore_title_related_recall"] = bertscore_title_related_recall
 
     # Prepare final dataset
     X = combined_df
