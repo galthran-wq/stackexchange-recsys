@@ -6,6 +6,11 @@ from bs4 import BeautifulSoup
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from sklearn.utils import shuffle
+from sklearn.model_selection import train_test_split
 
 
 def extract_data(data_dir: str):
@@ -33,9 +38,6 @@ def preprocess_data(data: dict):
     tags = data["Tags"]
     comments = data["Comments"]
 
-    # Split data into train and test before preprocessing
-    train_post_links, test_post_links = train_test_split(post_links, test_size=0.2, random_state=42)
-
     # Feature Engineering
     # 1. Extract features from Posts
     posts_features = posts[['id', 'score', 'viewcount', 'answercount', 'commentcount']]
@@ -57,24 +59,47 @@ def preprocess_data(data: dict):
     tags_onehot = tags['tagname'].str.get_dummies()
     tags_onehot['postid'] = tags['id']
 
-    # Merge features with PostLinks for train data
-    train_post_links = train_post_links.merge(posts_features, left_on='postid', right_on='postid', how='left')
-    train_post_links = train_post_links.merge(posts_features, left_on='relatedpostid', right_on='postid', suffixes=('', '_related'), how='left')
-    train_post_links = train_post_links.merge(votes_agg, on='postid', how='left')
-    train_post_links = train_post_links.merge(comments_agg, on='postid', how='left')
-    train_post_links = train_post_links.merge(tags_onehot, on='postid', how='left')
+    # Generate negative examples
+    # Get all unique post IDs
+    post_ids = posts['id'].unique()
 
-    X_train = train_post_links
-    y_train = train_post_links['linktypeid']
+    # Create a set of existing links for quick lookup
+    existing_links = set(zip(post_links['postid'], post_links['relatedpostid']))
 
-    # Preprocess test data
-    test_post_links = test_post_links.merge(posts_features, left_on='postid', right_on='postid', how='left')
-    test_post_links = test_post_links.merge(posts_features, left_on='relatedpostid', right_on='postid', suffixes=('', '_related'), how='left')
-    test_post_links = test_post_links.merge(votes_agg, on='postid', how='left')
-    test_post_links = test_post_links.merge(comments_agg, on='postid', how='left')
-    test_post_links = test_post_links.merge(tags_onehot, on='postid', how='left')
+    # Generate random pairs of post IDs
+    num_negative_samples = len(post_links)  # You can adjust this number
+    negative_samples = set()
 
-    X_test = test_post_links
-    y_test = test_post_links['linktypeid']
+    while len(negative_samples) < num_negative_samples:
+        post1, post2 = np.random.choice(post_ids, 2, replace=False)
+        if (post1, post2) not in existing_links and (post2, post1) not in existing_links:
+            negative_samples.add((post1, post2))
 
+    # Convert negative samples to DataFrame
+    negative_df = pd.DataFrame(list(negative_samples), columns=['postid', 'relatedpostid'])
+    negative_df['linktypeid'] = 0  # Label negative examples as 0
+
+    # Label positive examples as 1
+    positive_df = post_links.copy()
+    positive_df['linktypeid'] = 1
+
+    # Combine positive and negative examples
+    combined_df = pd.concat([positive_df, negative_df], ignore_index=True)
+
+    # Shuffle the dataset
+    combined_df = shuffle(combined_df).reset_index(drop=True)
+
+    # Merge features with combined_df
+    combined_df = combined_df.merge(posts_features, left_on='postid', right_on='postid', how='left')
+    combined_df = combined_df.merge(posts_features, left_on='relatedpostid', right_on='postid', suffixes=('', '_related'), how='left')
+    combined_df = combined_df.merge(votes_agg, on='postid', how='left')
+    combined_df = combined_df.merge(comments_agg, on='postid', how='left')
+    combined_df = combined_df.merge(tags_onehot, on='postid', how='left')
+
+    # Prepare final dataset
+    X = combined_df
+    y = combined_df['linktypeid']
+
+    # Train/Test Split
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     return X_train, X_test, y_train, y_test
