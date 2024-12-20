@@ -28,7 +28,69 @@ so we deleted them from the dataset. The resulting amount of post links is 3717.
 
 ### CatBoost
 
-Leu, it's your turn to write 😳❤️
+We have experimented with the CatBoost library to train a model for recommending similar or duplicate questions. Below are the details of the training process, results, and evaluation metrics.
+
+#### Training Process
+
+- **Data Preparation**: We used a combination of features extracted from the posts, including text embeddings for titles and bodies, as well as aggregated features from votes and comments. We used all the positive pairs provided in the dataset and generated randomly sampled negative examples to create a balanced training set.
+- **Model Configuration**: The CatBoost model was configured with 1000 iterations, a learning rate of 0.1, and a tree depth of 6. Text features included the body and title of the posts.
+- **Training and Evaluation**: The model was trained to predict whether a given pair of posts is relevant. The dataset was split into 80% training and 20% testing data. The training process included monitoring the model's performance on the test set to prevent overfitting.
+
+#### Results
+
+- **Accuracy**: The model achieved an accuracy of 91.74% on the test set.
+- **Feature Importance**: The most important features included the body and title embeddings, as well as vote counts.
+
+#### Retrieval Examples
+
+The model was used to retrieve the top 5 closest documents for a given test post. Here are some examples (only titles are shown):
+
+- **Test Post ID: 10042**
+  - **Title**: How to make softer biscuits?
+  - **Top 5 Closest Documents**:
+    1. Translating cooking terms between US / UK / AU / CA / NZ
+    2. Difference between Maida and All purpose flour
+    3. Butter substitute for 1 cup of butter for baking
+    4. What is the purpose of sifting dry ingredients?
+    5. Are there any general principles of ingredient substitutions?
+
+- **Test Post ID: 10070**
+  - **Title**: 1/4 cup of shredded basil OR 1/4 cup of basil that is then shredded?
+  - **Top 5 Closest Documents**:
+    1. What is a good use for lots of fresh cilantro?
+    2. Translating cooking terms between US / UK / AU / CA / NZ
+    3. Is it worth tearing lettuce for salad?
+    4. When, if ever, are dried herbs preferable to fresh herbs?
+    5. How can you reduce the heat of a chili pepper?
+
+- **Test Post ID: 10280**
+  - **Title**: What can I do with frozen eggs?
+  - **Top 5 Closest Documents**:
+    1. Are refrigerated hard boiled eggs really unsafe after a week?
+    2. Should I refrigerate eggs?
+    3. How long can I keep eggs in the refrigerator?
+    4. Is it safe to eat raw eggs?
+    5. How long can eggs be unrefrigerated before becoming unsafe to eat?
+
+- **Test Post ID: 10315**
+  - **Title**: How can I ensure food safety if my cooking utensils have touched raw meat?
+  - **Top 5 Closest Documents**:
+    1. Are there books describing the general principles of cooking?
+    2. Translating cooking terms between US / UK / AU / CA / NZ
+    3. Why does my food turn out poorly using an All-Clad Stainless-Steel Fry Pan?
+    4. How can brown stains be removed from pots and pans?
+    5. Difference in technique for cooking with non-stick and standard pans?
+
+#### Evaluation Metrics
+
+The model's performance was evaluated using Recall and NDCG (Normalized Discounted Cumulative Gain) at various cut-off points. Below is a summary of the results:
+
+| Metric       | @5   | @10  | @30  | @50  | @100 |
+|--------------|------|------|------|------|------|
+| Recall       | 0.25 | 0.37 | 0.56 | 0.64 | 0.76 |
+| NDCG         | 0.16 | 0.20 | 0.25 | 0.26 | 0.28 |
+
+These metrics indicate the model's ability to retrieve relevant documents effectively, with higher values representing better performance.
 
 ### Faiss
 
