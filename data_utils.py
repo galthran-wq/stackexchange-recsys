@@ -1,3 +1,4 @@
+from typing import List
 import os
 
 import numpy as np
@@ -9,6 +10,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils import shuffle
 from tqdm.notebook import tqdm
 from sentence_transformers import SentenceTransformer
+from umap import UMAP
 
 
 def extract_data(data_dir: str):
@@ -67,13 +69,32 @@ def calculate_bertscore(
     return output
 
 
+class Embedder:
+    def __init__(self, model: str = "BAAI/bge-m3", reduce_dim: int = None):
+        self.model = SentenceTransformer(model)
+        self.reduce_dim = reduce_dim or self.model.get_sentence_embedding_dimension()
+        self.reducer = UMAP(n_components=self.reduce_dim)
+
+    def embed(self, text: str | List[str], show_progress: bool = False):
+        if isinstance(text, str):
+            embeddings = self.model.encode(text)
+        else:
+            embeddings = self.model.encode(text, show_progress_bar=show_progress)
+        reduced_embeddings = self.reducer.fit_transform(embeddings)
+        return reduced_embeddings
+
+
 def preprocess_data(
     data: dict,
     n_negative_samples_per_link: int = 1,
     add_tags: bool = False,
     add_post_text: bool = False,
     include_pooled_comments: bool = False,
-    add_bertscore: bool = False
+    add_bertscore: bool = False,
+    add_title_embedding: bool = False,
+    title_embedding_dim: int = None,
+    add_body_embedding: bool = False,
+    body_embedding_dim: int = None,
 ):
     post_links = data["PostLinks"]
     posts = data["Posts"][data["Posts"]["posttypeid"] == "1"]
@@ -91,6 +112,17 @@ def preprocess_data(
     if add_post_text:
         posts_features['body'] = posts_features['body'].map(clean_html)
     posts_features = posts_features.rename(columns={'id': 'postid'})
+
+    if add_title_embedding:
+        title_embedder = Embedder(reduce_dim=title_embedding_dim)
+        title_embeddings = title_embedder.embed(posts_features['title'].tolist(), show_progress=True)
+        for i in range(title_embeddings.shape[1]):
+            posts_features[f'title_embedding_{i}'] = [embedding[i] for embedding in title_embeddings]
+    if add_body_embedding:
+        body_embedder = Embedder(reduce_dim=body_embedding_dim)
+        body_embeddings = body_embedder.embed(posts_features['body'].tolist(), show_progress=True)
+        for i in range(body_embeddings.shape[1]):
+            posts_features[f'body_embedding_{i}'] = [embedding[i] for embedding in body_embeddings]
 
     # 2. Extract features from Users
     users_features = users[['id', 'reputation', 'views', 'upvotes', 'downvotes']]
@@ -159,7 +191,6 @@ def preprocess_data(
     if add_tags:
         combined_df = combined_df.merge(tags_onehot, on='postid', how='left')
 
-    combined_df.drop(columns=["postid", "relatedpostid", "id", "creationdate", "postid_related"], inplace=True)
     combined_df = combined_df[combined_df["body"].isnull() == False]
     combined_df = combined_df[combined_df["body_related"].isnull() == False]
 
