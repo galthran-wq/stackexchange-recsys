@@ -8,6 +8,7 @@ from evaluate import load
 from sklearn.model_selection import train_test_split
 from sklearn.utils import shuffle
 from tqdm.notebook import tqdm
+from sentence_transformers import SentenceTransformer
 
 
 def extract_data(data_dir: str):
@@ -196,5 +197,45 @@ def preprocess_data(
 
 def preprocess_data_faiss(data: dict):
     posts = data["Posts"][data["Posts"]["posttypeid"] == "1"]
+    posts["body"] = posts["body"].map(clean_html)
+
+    model = SentenceTransformer("BAAI/bge-m3")
+
+    body_embeddings = model.encode(posts["body"].tolist())
+    title_embeddings = model.encode(posts["title"].tolist())
+    combined_embeddings = np.hstack((body_embeddings, title_embeddings))
+
+    return combined_embeddings
+
+def preprocess_data_faiss_test(data: dict):
+    post_links = data["PostLinks"]
+    posts = data["Posts"][data["Posts"]["posttypeid"] == "1"]
+    posts["id"] = posts["id"].astype("int32")
+    posts = posts.set_index("id")
     posts['body'] = posts['body'].map(clean_html)
-    return posts
+    posts = posts[["body", "title"]]
+
+    existing_links = set(zip(post_links['postid'], post_links['relatedpostid']))
+    num_negative_samples = len(post_links)
+    negative_samples = set()
+
+    while len(negative_samples) < num_negative_samples:
+        post1, post2 = np.random.choice(posts.index, 2, replace=False)
+        if (post1, post2) not in existing_links and (post2, post1) not in existing_links:
+            negative_samples.add((post1, post2))
+
+    negative_df = pd.DataFrame(list(negative_samples), columns=['postid', 'relatedpostid'])
+    negative_df['linktypeid'] = 0
+
+    positive_df = post_links.copy()
+    positive_df['linktypeid'] = 1
+
+    combined_df = pd.concat([positive_df, negative_df], ignore_index=True)
+    combined_df = shuffle(combined_df).reset_index(drop=True)
+    combined_df.drop(columns=["id", "creationdate"], inplace=True)
+
+    combined_df["postid"] = posts.index.get_indexer(combined_df["postid"].astype("int32"))
+    combined_df["relatedpostid"] = posts.index.get_indexer(combined_df["relatedpostid"].astype("int32"))
+    combined_df = combined_df[(combined_df["postid"] != -1) & (combined_df["relatedpostid"] != -1)]
+
+    return posts, combined_df
