@@ -246,22 +246,24 @@ def preprocess_data_faiss_test(data: dict):
     posts['body'] = posts['body'].map(clean_html)
     posts = posts[["body", "title"]]
 
-    existing_links = set(zip(post_links['postid'], post_links['relatedpostid']))
-    num_negative_samples = len(post_links)
-    negative_samples = set()
-
-    while len(negative_samples) < num_negative_samples:
-        post1, post2 = np.random.choice(posts.index, 2, replace=False)
-        if (post1, post2) not in existing_links and (post2, post1) not in existing_links:
-            negative_samples.add((post1, post2))
-
-    negative_df = pd.DataFrame(list(negative_samples), columns=['postid', 'relatedpostid'])
-    negative_df['linktypeid'] = 0
+    # existing_links = set(zip(post_links['postid'], post_links['relatedpostid']))
+    # num_negative_samples = len(post_links)
+    # negative_samples = set()
+    #
+    # while len(negative_samples) < num_negative_samples:
+    #     post1, post2 = np.random.choice(posts.index, 2, replace=False)
+    #     if (post1, post2) not in existing_links and (post2, post1) not in existing_links:
+    #         negative_samples.add((post1, post2))
+    #
+    # negative_df = pd.DataFrame(list(negative_samples), columns=['postid', 'relatedpostid'])
+    # negative_df['linktypeid'] = 0
 
     positive_df = post_links.copy()
     positive_df['linktypeid'] = 1
 
-    combined_df = pd.concat([positive_df, negative_df], ignore_index=True)
+    # combined_df = pd.concat([positive_df, negative_df], ignore_index=True)
+    combined_df = positive_df
+
     combined_df = shuffle(combined_df).reset_index(drop=True)
     combined_df.drop(columns=["id", "creationdate"], inplace=True)
 
