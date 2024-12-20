@@ -26,6 +26,11 @@ This dataset contains 11812 questions with different info such as title, questio
 The dataset also has 4272 post links that match pairs of related questions. Some of them match deleted questions,
 so we deleted them from the dataset. The resulting amount of post links is 3717.
 
+Below is the summary statistics of the dataset.
+
+![Summary statistics](images/eda.png)
+
+
 ### CatBoost
 
 Leu, it's your turn to write 😳❤️
