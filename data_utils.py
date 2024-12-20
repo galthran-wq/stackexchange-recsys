@@ -1,18 +1,14 @@
 import os
 
-
+import numpy as np
 import pandas as pd
 import py7zr
 from bs4 import BeautifulSoup
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer
+from evaluate import load
 from sklearn.model_selection import train_test_split
-import numpy as np
-import pandas as pd
-from sklearn.preprocessing import StandardScaler
 from sklearn.utils import shuffle
-from sklearn.model_selection import train_test_split
-from bs4 import BeautifulSoup
+from tqdm.notebook import tqdm
+from sentence_transformers import SentenceTransformer
 
 
 def extract_data(data_dir: str):
@@ -24,12 +20,11 @@ def load_data(data_dir: str):
     data = {}
     for filename in os.listdir(data_dir):
         if filename.endswith(".xml"):
-            with open(os.path.join(data_dir, filename), "r") as file:
+            with open(os.path.join(data_dir, filename), "r", encoding="utf-8") as file:
                 soup = BeautifulSoup(file, "lxml")
                 attributes = [row.attrs for row in soup.find_all("row")]
                 data[filename[:-4]] = pd.DataFrame(attributes)
     return data
-
 
 
 def clean_html(html_content):
@@ -40,15 +35,48 @@ def clean_html(html_content):
     return text_content
 
 
+def calculate_bertscore(
+    df: pd.DataFrame,
+    prediction_column: str,
+    reference_column: str,
+    metric: str = "f1",
+    batch_size: int = 50
+):
+    bertscore = load("bertscore")
+    num_batches = len(df) // batch_size + (len(df) % batch_size > 0)
+    output = []
+
+    for i in tqdm(
+        range(num_batches),
+        desc=f"Calculating BERTScore (pred: {prediction_column}; ref: {reference_column}; metric: {metric})"
+    ):
+        start = i * batch_size
+        end = start + batch_size
+
+        batch_predictions = df[prediction_column].iloc[start:end].tolist()
+        batch_references = df[reference_column].iloc[start:end].tolist()
+
+        results = bertscore.compute(
+            predictions=batch_predictions,
+            references=batch_references,
+            lang="en",
+            device="cuda"
+        )
+        output.extend(results[metric])
+
+    return output
+
+
 def preprocess_data(
-    data: dict, 
+    data: dict,
     n_negative_samples_per_link: int = 1,
     add_tags: bool = False,
     add_post_text: bool = False,
     include_pooled_comments: bool = False,
+    add_bertscore: bool = False
 ):
     post_links = data["PostLinks"]
-    posts = data["Posts"]
+    posts = data["Posts"][data["Posts"]["posttypeid"] == "1"]
     users = data["Users"]
     votes = data["Votes"]
     tags = data["Tags"]
@@ -58,7 +86,7 @@ def preprocess_data(
     # 1. Extract features from Posts
     posts_features = ['id', 'score', 'viewcount', 'answercount', 'commentcount']
     if add_post_text:
-        posts_features.append('body')
+        posts_features.extend(["body", "title"])
     posts_features = posts[posts_features]
     if add_post_text:
         posts_features['body'] = posts_features['body'].map(clean_html)
@@ -73,9 +101,14 @@ def preprocess_data(
     votes_agg = votes_agg.rename(columns={'votetypeid': 'vote_count'})
 
     # 4. Aggregate Comments
-    comments_agg = comments.groupby('postid').agg({'score': 'mean', 'id': 'count'}).reset_index()
-    comments_agg = comments_agg.rename(columns={'score': 'avg_comment_score', 'id': 'comment_count'})
-    
+    comments_agg = (
+        comments.astype({"score": "int32", "id": "int32"})
+        .groupby('postid')
+        .agg({'score': 'mean', 'id': 'count'})
+        .reset_index()
+        .rename(columns={'score': 'avg_comment_score', 'id': 'comment_count'})
+    )
+
     if include_pooled_comments:
         pooled_text = comments.groupby('postid')['text'].apply(lambda x: ' '.join(x)).reset_index()
         pooled_text = pooled_text.rename(columns={'text': 'comments_text'})
@@ -126,6 +159,34 @@ def preprocess_data(
     if add_tags:
         combined_df = combined_df.merge(tags_onehot, on='postid', how='left')
 
+    combined_df.drop(columns=["postid", "relatedpostid", "id", "creationdate", "postid_related"], inplace=True)
+    combined_df = combined_df[combined_df["body"].isnull() == False]
+    combined_df = combined_df[combined_df["body_related"].isnull() == False]
+
+    if add_bertscore:
+        combined_df["bertscore_title_f1"] = calculate_bertscore(
+            combined_df,
+            prediction_column="title",
+            reference_column="title_related"
+        )
+        combined_df["bertscore_body_f1"] = calculate_bertscore(
+            combined_df,
+            prediction_column="body",
+            reference_column="body_related"
+        )
+        combined_df["bertscore_title_recall"] = calculate_bertscore(
+            combined_df,
+            prediction_column="body_related",
+            reference_column="title",
+            metric="recall"
+        )
+        combined_df["bertscore_title_related_recall"] = calculate_bertscore(
+            combined_df,
+            prediction_column="body",
+            reference_column="title_related",
+            metric="recall"
+        )
+
     # Prepare final dataset
     X = combined_df
     y = combined_df['linktypeid']
@@ -133,3 +194,48 @@ def preprocess_data(
     # Train/Test Split
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     return X_train, X_test, y_train, y_test
+
+def preprocess_data_faiss(data: dict):
+    posts = data["Posts"][data["Posts"]["posttypeid"] == "1"]
+    posts["body"] = posts["body"].map(clean_html)
+
+    model = SentenceTransformer("BAAI/bge-m3")
+
+    body_embeddings = model.encode(posts["body"].tolist())
+    title_embeddings = model.encode(posts["title"].tolist())
+    combined_embeddings = np.hstack((body_embeddings, title_embeddings))
+
+    return combined_embeddings
+
+def preprocess_data_faiss_test(data: dict):
+    post_links = data["PostLinks"]
+    posts = data["Posts"][data["Posts"]["posttypeid"] == "1"]
+    posts["id"] = posts["id"].astype("int32")
+    posts = posts.set_index("id")
+    posts['body'] = posts['body'].map(clean_html)
+    posts = posts[["body", "title"]]
+
+    existing_links = set(zip(post_links['postid'], post_links['relatedpostid']))
+    num_negative_samples = len(post_links)
+    negative_samples = set()
+
+    while len(negative_samples) < num_negative_samples:
+        post1, post2 = np.random.choice(posts.index, 2, replace=False)
+        if (post1, post2) not in existing_links and (post2, post1) not in existing_links:
+            negative_samples.add((post1, post2))
+
+    negative_df = pd.DataFrame(list(negative_samples), columns=['postid', 'relatedpostid'])
+    negative_df['linktypeid'] = 0
+
+    positive_df = post_links.copy()
+    positive_df['linktypeid'] = 1
+
+    combined_df = pd.concat([positive_df, negative_df], ignore_index=True)
+    combined_df = shuffle(combined_df).reset_index(drop=True)
+    combined_df.drop(columns=["id", "creationdate"], inplace=True)
+
+    combined_df["postid"] = posts.index.get_indexer(combined_df["postid"].astype("int32"))
+    combined_df["relatedpostid"] = posts.index.get_indexer(combined_df["relatedpostid"].astype("int32"))
+    combined_df = combined_df[(combined_df["postid"] != -1) & (combined_df["relatedpostid"] != -1)]
+
+    return posts, combined_df
